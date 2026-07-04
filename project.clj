@@ -5,6 +5,7 @@
                  [com.github.seancorfield/next.jdbc "1.3.909"]
                  [org.xerial/sqlite-jdbc "3.45.1.0"]
                  [org.clojure/data.json "2.4.0"]]
+  :plugins [[cloverage "1.2.4"]]
   :main event-sourcing.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all
