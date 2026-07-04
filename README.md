@@ -1,28 +1,38 @@
 # Event Sourcing Engine
 
-A C# .NET 8 event sourcing framework with SQLite-backed event store, snapshot support, and a projection engine.
+A Clojure event sourcing framework with SQLite-backed event store (via next.jdbc), snapshot support, and a projection engine.
 
 ## Features
 
-- **AggregateRoot<TId>** base class with event replay and snapshotting
-- **SqliteEventStore** for persisting and loading event streams
-- **Projection Engine** for building read models from stored events
-- **Sample Domain**: BankAccount with Deposit, Withdraw, and Transfer events
+- **AggregateRoot protocol** with event replay using `reduce` and snapshotting
+- **SQLite EventStore** (next.jdbc) for persisting and loading event streams with optimistic concurrency
+- **Projection Engine** for building read models from stored events using atoms
+- **Sample Domain**: Bank account with deposit, withdraw, and transfer events
 
 ## Structure
 
-- `src/EventSourcing/` — core library (aggregate root, event store, projections)
-- `src/Sample/` — sample BankAccount domain with console app
-- `tests/EventSourcing.Tests/` — xUnit tests
+- `src/event_sourcing/aggregate.clj` — AggregateRoot protocol and core functions
+- `src/event_sourcing/store.clj` — SQLite-backed event store and aggregate repository
+- `src/event_sourcing/projection.clj` — Projection protocol and engine
+- `src/event_sourcing/sample/bank_account.clj` — Sample bank account domain and projections
+- `src/event_sourcing/core.clj` — Main entry point with bank account demo
+- `test/event_sourcing/bank_account_test.clj` — clojure.test tests
 
 ## Running
 
 ```bash
-dotnet run --project src/Sample
+lein run
 ```
 
 ## Testing
 
 ```bash
-dotnet test
+lein test
 ```
+
+## Dependencies
+
+- Clojure 1.11.1
+- [next.jdbc](https://github.com/seancorfield/next-jdbc) for database access
+- [SQLite JDBC](https://github.com/xerial/sqlite-jdbc) driver
+- [clojure.data.json](https://github.com/clojure/data.json) for JSON serialization

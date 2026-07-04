@@ -1,27 +1,24 @@
-## .NET
-bin/
-obj/
-*.user
-*.suo
-*.cache
-*.dll
-*.exe
-*.pdb
-*.nupkg
+## Clojure / Leiningen
+target/
+classes/
+checkouts/
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+.lein-*
+.nrepl-port
+.cpcache/
 
 ## IDE
-.vs/
-.vscode/
 .idea/
-*.sln.DotSettings.user
+.vscode/
+*.iml
+.calva/
 
 ## OS
 .DS_Store
 Thumbs.db
-
-## Build
-artifacts/
-TestResults/
 
 ## SQLite
 *.db
