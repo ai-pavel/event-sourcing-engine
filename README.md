@@ -1,7 +1,7 @@
 # Event Sourcing Engine
 
-[![CI](https://github.com/pavel-genai/event-sourcing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/pavel-genai/event-sourcing-engine/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/pavel-genai/event-sourcing-engine/branch/main/graph/badge.svg)](https://codecov.io/gh/pavel-genai/event-sourcing-engine)
+[![CI](https://github.com/ai-pavel/event-sourcing-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/ai-pavel/event-sourcing-engine/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/ai-pavel/event-sourcing-engine/branch/main/graph/badge.svg)](https://codecov.io/gh/ai-pavel/event-sourcing-engine)
 
 A Clojure event sourcing framework with SQLite-backed event store (via next.jdbc), snapshot support, and a projection engine.
 
