@@ -38,6 +38,15 @@
                     (bank/receive-transfer "acc-1" 75.0 :description "Rent"))]
     (is (= 125.0 (:balance account)))))
 
+(deftest receive-transfer-rejects-non-positive-amount
+  (let [account (bank/open-account "acc-2" "Bob" 50.0)]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (bank/receive-transfer account "acc-1" 0.0)))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (bank/receive-transfer account "acc-1" -25.0)))
+    (is (= 125.0 (:balance (bank/receive-transfer account "acc-1" 75.0)))
+        "Positive amounts still increase the balance")))
+
 (deftest uncommitted-events-tracks-all-raised-events
   (let [account (-> (bank/open-account "acc-1" "Alice" 100.0)
                     (bank/deposit 50.0)

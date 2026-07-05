@@ -154,6 +154,8 @@
 (defn receive-transfer
   "Receives a transfer from another account (inbound side)."
   [account source-account-id amount & {:keys [description] :or {description ""}}]
+  (when (<= amount 0)
+    (throw (ex-info "Transfer amount must be positive." {:amount amount})))
   (agg/raise-event account
                    {:event-type        :transfer-received
                     :aggregate-id      (:aggregate-id account)
