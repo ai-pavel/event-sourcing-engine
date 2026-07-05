@@ -80,6 +80,41 @@
         (finally
           (.delete (java.io.File. db-path)))))))
 
+(defn- counting-projection
+  "A projection that counts handled events, optionally throwing on a given seq."
+  [state throw-on-seq]
+  (reify proj/Projection
+    (handle-event [_ event]
+      (when (and throw-on-seq (= throw-on-seq (:sequence-number event)))
+        (throw (ex-info "boom" {})))
+      (swap! state inc))))
+
+(deftest catch-up-does-not-advance-past-a-failing-event
+  (testing "A throwing projection surfaces a clear error and leaves the cursor put"
+    (let [count-state (atom 0)
+          engine (-> (proj/create-projection-engine)
+                     (proj/register! (counting-projection count-state 3)))
+          events [{:sequence-number 1 :event-type :x}
+                  {:sequence-number 2 :event-type :x}
+                  {:sequence-number 3 :event-type :x}
+                  {:sequence-number 4 :event-type :x}]]
+      (let [ex (try (proj/catch-up! engine (fn [_] events))
+                    nil
+                    (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? ex) "catch-up! rethrows on projection failure")
+        (is (= 3 (:event-sequence (ex-data ex)))
+            "Error identifies the failing event sequence")
+        (is (= 0 (:projection-index (ex-data ex)))))
+      ;; Cursor advanced only through the last fully-applied event (2).
+      (is (= 2 @(:last-processed-seq engine)))
+      (is (= 2 @count-state)))))
+
+(deftest catch-up-requires-sequence-number
+  (let [engine (-> (proj/create-projection-engine)
+                   (proj/register! (counting-projection (atom 0) nil)))]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (proj/catch-up! engine (fn [_] [{:version 1 :event-type :x}]))))))
+
 (deftest projection-catches-up-on-events
   (testing "Projections process stored events correctly"
     (let [db-path (str "test_proj_" (System/nanoTime) ".db")
