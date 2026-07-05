@@ -80,6 +80,27 @@
         (finally
           (.delete (java.io.File. db-path)))))))
 
+(deftest append-events-stale-version-throws-structured-conflict
+  (testing "A stale expected-version yields the structured Concurrency conflict"
+    (let [db-path (str "test_conflict_" (System/nanoTime) ".db")
+          ds (store/create-datasource db-path)]
+      (try
+        (store/initialize! ds)
+        (let [acc (bank/open-account "acc-1" "Alice" 100.0)]
+          (store/save-aggregate! ds acc 0)) ; persists version 1
+        ;; Appending again with a stale expected-version of 0 must conflict.
+        (let [ex (try (store/append-events! ds "acc-1"
+                                            [{:event-type :money-deposited
+                                              :version 1 :amount 5.0}]
+                                            0)
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? ex))
+          (is (= "Concurrency conflict" (.getMessage ex)))
+          (is (= "acc-1" (:aggregate-id (ex-data ex)))))
+        (finally
+          (.delete (java.io.File. db-path)))))))
+
 (deftest projection-catches-up-on-events
   (testing "Projections process stored events correctly"
     (let [db-path (str "test_proj_" (System/nanoTime) ".db")

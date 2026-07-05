@@ -48,9 +48,26 @@
 ;; Event persistence
 ;; ---------------------------------------------------------------------------
 
+(defn- unique-violation?
+  "True if a SQLException is a UNIQUE-constraint violation (the aggregate/version
+   uniqueness we rely on for optimistic concurrency)."
+  [^java.sql.SQLException e]
+  (let [msg (str (.getMessage e))]
+    (or (re-find #"(?i)unique constraint" msg)
+        (re-find #"(?i)constraint failed" msg))))
+
 (defn append-events!
   "Appends a batch of events for a given aggregate with optimistic concurrency.
-   Throws an exception if the current version does not match expected-version."
+
+   The UNIQUE(aggregate_id, version) constraint is the source of truth: even
+   if two writers read the same MAX(version) and both pass the pre-check, only
+   one INSERT can succeed (the transaction serializes the read-check and the
+   writes). A constraint violation is translated into the structured
+   'Concurrency conflict' ex-info (never a raw SQL error), so callers can
+   reliably distinguish a genuine conflict from other DB errors.
+
+   `expected-version` is the aggregate version the caller believes is current;
+   the append succeeds only if the persisted stream is still at that version."
   [ds aggregate-id events expected-version]
   (jdbc/with-transaction [tx ds]
     (let [result (jdbc/execute-one! tx
@@ -63,16 +80,24 @@
                         {:aggregate-id     aggregate-id
                          :expected-version expected-version
                          :actual-version   current-version})))
-      (doseq [event events]
-        (jdbc/execute! tx
-          ["INSERT INTO events (aggregate_id, version, event_type, payload, timestamp, event_id)
-            VALUES (?, ?, ?, ?, ?, ?)"
-           aggregate-id
-           (:version event)
-           (name (:event-type event))
-           (json/write-str (dissoc event :event-type :version))
-           (str (or (:timestamp event) (java.time.Instant/now)))
-           (str (or (:event-id event) (java.util.UUID/randomUUID)))])))))
+      (try
+        (doseq [event events]
+          (jdbc/execute! tx
+            ["INSERT INTO events (aggregate_id, version, event_type, payload, timestamp, event_id)
+              VALUES (?, ?, ?, ?, ?, ?)"
+             aggregate-id
+             (:version event)
+             (name (:event-type event))
+             (json/write-str (dissoc event :event-type :version))
+             (str (or (:timestamp event) (java.time.Instant/now)))
+             (str (or (:event-id event) (java.util.UUID/randomUUID)))]))
+        (catch java.sql.SQLException e
+          (if (unique-violation? e)
+            (throw (ex-info "Concurrency conflict"
+                            {:aggregate-id     aggregate-id
+                             :expected-version expected-version}
+                            e))
+            (throw e)))))))
 
 (defn- row->event
   "Converts a database row map to a domain event map."
