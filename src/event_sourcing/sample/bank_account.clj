@@ -39,51 +39,30 @@
     ;; Unknown event types are ignored
     state))
 
-(def empty-bank-account
-  "Initial state for a new bank account aggregate."
-  (reify agg/AggregateRoot
-    (apply-event [this event] (apply-bank-event this event))
-    (aggregate-type [_] "bank-account")
-    (serialize-state [this]
-      (select-keys this [:aggregate-id :account-holder :balance]))
-    (restore-state [this state-map]
-      (merge this state-map))))
+;; The aggregate is represented once, as a record implementing AggregateRoot.
+;; A record behaves like a map for key access/assoc/update, so raise-event,
+;; replay-events, and the store's :aggregate-id/:version access all work
+;; unchanged. This replaces the previous triple-defined behavior (a dead
+;; `empty-bank-account` reify, metadata attached in make-bank-account, and a
+;; global `extend-type clojure.lang.IPersistentMap` that made *every* map an
+;; AggregateRoot).
+(defrecord BankAccount [aggregate-id version uncommitted account-holder balance]
+  agg/AggregateRoot
+  (apply-event [this event] (apply-bank-event this event))
+  (aggregate-type [_] "bank-account")
+  (serialize-state [this]
+    (select-keys this [:aggregate-id :account-holder :balance]))
+  (restore-state [this state-map]
+    (merge this state-map)))
 
 (defn make-bank-account
-  "Creates a new empty bank account map that implements AggregateRoot."
+  "Creates a new empty bank account aggregate implementing AggregateRoot."
   []
-  (with-meta {:aggregate-id nil
-              :version 0
-              :uncommitted []
-              :account-holder ""
-              :balance 0}
-    {`agg/apply-event (fn [state event] (apply-bank-event state event))
-     `agg/aggregate-type (fn [_] "bank-account")
-     `agg/serialize-state (fn [state] (select-keys state [:aggregate-id :account-holder :balance]))
-     `agg/restore-state (fn [state state-map] (merge state state-map))}))
-
-;; We extend the protocol to plain maps via metadata isn't straightforward,
-;; so we extend it to IPersistentMap directly.
-(extend-type clojure.lang.IPersistentMap
-  agg/AggregateRoot
-  (apply-event [this event]
-    (if-let [f (get (meta this) `agg/apply-event)]
-      (let [result (f this event)]
-        (with-meta result (meta this)))
-      this))
-  (aggregate-type [this]
-    (if-let [f (get (meta this) `agg/aggregate-type)]
-      (f this)
-      "unknown"))
-  (serialize-state [this]
-    (if-let [f (get (meta this) `agg/serialize-state)]
-      (f this)
-      (dissoc this :version :uncommitted)))
-  (restore-state [this state-map]
-    (if-let [f (get (meta this) `agg/restore-state)]
-      (let [result (f this state-map)]
-        (with-meta result (meta this)))
-      (merge this state-map))))
+  (map->BankAccount {:aggregate-id nil
+                     :version 0
+                     :uncommitted []
+                     :account-holder ""
+                     :balance 0}))
 
 ;; ---------------------------------------------------------------------------
 ;; Command functions (raise events with validation)
