@@ -77,7 +77,9 @@
 (defn- row->event
   "Converts a database row map to a domain event map."
   [row]
-  (let [payload (json/read-str (:payload row) :key-fn keyword)]
+  ;; :bigdec true so money amounts persisted as decimal JSON numbers are
+  ;; parsed back as exact java.math.BigDecimal values rather than doubles.
+  (let [payload (json/read-str (:payload row) :key-fn keyword :bigdec true)]
     (merge payload
            {:event-type (keyword (:event_type row))
             :version    (:version row)
@@ -145,7 +147,7 @@
     {:aggregate-id   (:aggregate_id row)
      :version        (:version row)
      :aggregate-type (:aggregate_type row)
-     :state          (json/read-str (:state row) :key-fn keyword)
+     :state          (json/read-str (:state row) :key-fn keyword :bigdec true)
      :timestamp      (:timestamp row)}))
 
 ;; ---------------------------------------------------------------------------

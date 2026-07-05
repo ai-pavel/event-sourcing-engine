@@ -56,7 +56,7 @@
               :version 0
               :uncommitted []
               :account-holder ""
-              :balance 0}
+              :balance java.math.BigDecimal/ZERO}
     {`agg/apply-event (fn [state event] (apply-bank-event state event))
      `agg/aggregate-type (fn [_] "bank-account")
      `agg/serialize-state (fn [state] (select-keys state [:aggregate-id :account-holder :balance]))
@@ -86,6 +86,25 @@
       (merge this state-map))))
 
 ;; ---------------------------------------------------------------------------
+;; Money representation
+;; ---------------------------------------------------------------------------
+;;
+;; Money is represented as java.math.BigDecimal so that decimal fractions are
+;; exact (0.10 + 0.20 == 0.30). IEEE-754 doubles cannot represent these values
+;; exactly, which corrupts balances in an immutable event log. Amounts are
+;; coerced to BigDecimal at the command boundary via `->money`; arithmetic in
+;; `apply-bank-event` then stays in BigDecimal. Persistence round-trips exactly
+;; because the store reads JSON numbers with `:bigdec true`.
+
+(defn ->money
+  "Coerces a numeric amount to an exact java.math.BigDecimal."
+  [amount]
+  (cond
+    (instance? java.math.BigDecimal amount) amount
+    (integer? amount) (java.math.BigDecimal/valueOf (long amount))
+    :else (java.math.BigDecimal. (str amount))))
+
+;; ---------------------------------------------------------------------------
 ;; Command functions (raise events with validation)
 ;; ---------------------------------------------------------------------------
 
@@ -99,7 +118,7 @@
                    {:event-type     :account-opened
                     :aggregate-id   account-id
                     :account-holder account-holder
-                    :initial-deposit initial-deposit
+                    :initial-deposit (->money initial-deposit)
                     :event-id       (str (java.util.UUID/randomUUID))
                     :timestamp      (str (java.time.Instant/now))}))
 
@@ -111,7 +130,7 @@
   (agg/raise-event account
                    {:event-type   :money-deposited
                     :aggregate-id (:aggregate-id account)
-                    :amount       amount
+                    :amount       (->money amount)
                     :description  description
                     :event-id     (str (java.util.UUID/randomUUID))
                     :timestamp    (str (java.time.Instant/now))}))
@@ -128,7 +147,7 @@
   (agg/raise-event account
                    {:event-type   :money-withdrawn
                     :aggregate-id (:aggregate-id account)
-                    :amount       amount
+                    :amount       (->money amount)
                     :description  description
                     :event-id     (str (java.util.UUID/randomUUID))
                     :timestamp    (str (java.time.Instant/now))}))
@@ -146,7 +165,7 @@
                    {:event-type        :money-transferred
                     :aggregate-id      (:aggregate-id account)
                     :target-account-id target-account-id
-                    :amount            amount
+                    :amount            (->money amount)
                     :description       description
                     :event-id          (str (java.util.UUID/randomUUID))
                     :timestamp         (str (java.time.Instant/now))}))
@@ -158,7 +177,7 @@
                    {:event-type        :transfer-received
                     :aggregate-id      (:aggregate-id account)
                     :source-account-id source-account-id
-                    :amount            amount
+                    :amount            (->money amount)
                     :description       description
                     :event-id          (str (java.util.UUID/randomUUID))
                     :timestamp         (str (java.time.Instant/now))}))
