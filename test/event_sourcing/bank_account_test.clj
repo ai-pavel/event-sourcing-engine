@@ -80,6 +80,34 @@
         (finally
           (.delete (java.io.File. db-path)))))))
 
+(deftest in-memory-store-round-trip
+  (testing "load/save-aggregate work against the in-memory EventStore (no disk)"
+    (let [store (store/create-in-memory-store)
+          account (-> (bank/open-account "acc-1" "Alice" 100.0)
+                      (bank/deposit 50.0)
+                      (bank/withdraw 20.0))]
+      (store/save-aggregate! store account 0)
+      (let [reloaded (store/load-aggregate store (bank/make-bank-account) "acc-1")]
+        (is (= "acc-1" (:aggregate-id reloaded)))
+        (is (= "Alice" (:account-holder reloaded)))
+        (is (= 130.0 (:balance reloaded)))
+        (is (= 3 (:version reloaded))))
+      ;; A stale expected-version raises the structured concurrency conflict.
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (store/append-events! store "acc-1"
+                                         [{:event-type :x :version 1}] 0))))))
+
+(deftest in-memory-store-projection-catch-up
+  (testing "Projections catch up over the in-memory store"
+    (let [store (store/create-in-memory-store)
+          alice (bank/open-account "acc-1" "Alice" 100.0)
+          _ (store/save-aggregate! store alice 0)
+          summary (bank/create-account-summary-projection)
+          engine (-> (proj/create-projection-engine)
+                     (proj/register! summary))]
+      (proj/catch-up! engine (fn [after-seq] (store/get-all-events store after-seq)))
+      (is (= "Alice" (:account-holder (get @summary "acc-1")))))))
+
 (deftest projection-catches-up-on-events
   (testing "Projections process stored events correctly"
     (let [db-path (str "test_proj_" (System/nanoTime) ".db")

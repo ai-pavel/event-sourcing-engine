@@ -32,6 +32,30 @@
       timestamp      TEXT    NOT NULL
     )"])
 
+;; ---------------------------------------------------------------------------
+;; EventStore abstraction
+;; ---------------------------------------------------------------------------
+
+(defprotocol EventStore
+  "Storage backend for events and snapshots. Implementations may be backed by
+   SQLite (durable) or an in-memory atom (fast, isolated tests/demos)."
+  (-append-events! [store aggregate-id events expected-version]
+    "Appends events with optimistic concurrency on expected-version.")
+  (-get-events [store aggregate-id after-version]
+    "Returns events for one aggregate with version > after-version.")
+  (-get-all-events [store after-sequence limit]
+    "Returns events across all aggregates with sequence > after-sequence,
+     optionally bounded by limit (nil = unbounded), ordered by sequence.")
+  (-save-snapshot! [store snapshot]
+    "Upserts a snapshot keyed by aggregate-id.")
+  (-get-latest-snapshot [store aggregate-id]
+    "Returns the latest snapshot for an aggregate, or nil."))
+
+(defn event-store?
+  "True if x implements the EventStore protocol."
+  [x]
+  (satisfies? EventStore x))
+
 (defn create-datasource
   "Creates a next.jdbc datasource for the given SQLite database path."
   [db-path]
@@ -48,9 +72,8 @@
 ;; Event persistence
 ;; ---------------------------------------------------------------------------
 
-(defn append-events!
-  "Appends a batch of events for a given aggregate with optimistic concurrency.
-   Throws an exception if the current version does not match expected-version."
+(defn- sqlite-append-events!
+  "SQLite implementation of append-events! against a raw datasource."
   [ds aggregate-id events expected-version]
   (jdbc/with-transaction [tx ds]
     (let [result (jdbc/execute-one! tx
@@ -86,38 +109,45 @@
             :aggregate-id (:aggregate_id row)
             :sequence-number (:sequence_number row)})))
 
-(defn get-events
-  "Retrieves all events for an aggregate, optionally starting after a given version."
-  ([ds aggregate-id] (get-events ds aggregate-id 0))
-  ([ds aggregate-id after-version]
-   (let [rows (jdbc/execute! ds
-                ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
-                  FROM events
-                  WHERE aggregate_id = ? AND version > ?
-                  ORDER BY version"
-                 aggregate-id after-version]
-                {:builder-fn rs/as-unqualified-lower-maps})]
-     (mapv row->event rows))))
+(defn- sqlite-get-events
+  "SQLite implementation of get-events against a raw datasource."
+  [ds aggregate-id after-version]
+  (let [rows (jdbc/execute! ds
+               ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
+                 FROM events
+                 WHERE aggregate_id = ? AND version > ?
+                 ORDER BY version"
+                aggregate-id after-version]
+               {:builder-fn rs/as-unqualified-lower-maps})]
+    (mapv row->event rows)))
 
-(defn get-all-events
-  "Retrieves all events across all aggregates, optionally after a global sequence number."
-  ([ds] (get-all-events ds 0))
-  ([ds after-sequence]
-   (let [rows (jdbc/execute! ds
-                ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
-                  FROM events
-                  WHERE sequence_number > ?
-                  ORDER BY sequence_number"
-                 after-sequence]
-                {:builder-fn rs/as-unqualified-lower-maps})]
-     (mapv row->event rows))))
+(defn- sqlite-get-all-events
+  "SQLite implementation of get-all-events against a raw datasource."
+  [ds after-sequence limit]
+  (let [rows (if limit
+               (jdbc/execute! ds
+                 ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
+                   FROM events
+                   WHERE sequence_number > ?
+                   ORDER BY sequence_number
+                   LIMIT ?"
+                  after-sequence limit]
+                 {:builder-fn rs/as-unqualified-lower-maps})
+               (jdbc/execute! ds
+                 ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
+                   FROM events
+                   WHERE sequence_number > ?
+                   ORDER BY sequence_number"
+                  after-sequence]
+                 {:builder-fn rs/as-unqualified-lower-maps}))]
+    (mapv row->event rows)))
 
 ;; ---------------------------------------------------------------------------
 ;; Snapshots
 ;; ---------------------------------------------------------------------------
 
-(defn save-snapshot!
-  "Saves a snapshot of an aggregate's state, upserting by aggregate-id."
+(defn- sqlite-save-snapshot!
+  "SQLite implementation of save-snapshot! against a raw datasource."
   [ds snapshot]
   (jdbc/execute! ds
     ["INSERT INTO snapshots (aggregate_id, version, aggregate_type, state, timestamp)
@@ -133,8 +163,8 @@
      (json/write-str (:state snapshot))
      (str (:timestamp snapshot))]))
 
-(defn get-latest-snapshot
-  "Loads the most recent snapshot for an aggregate, or nil if none exists."
+(defn- sqlite-get-latest-snapshot
+  "SQLite implementation of get-latest-snapshot against a raw datasource."
   [ds aggregate-id]
   (when-let [row (jdbc/execute-one! ds
                    ["SELECT aggregate_id, version, aggregate_type, state, timestamp
@@ -147,6 +177,128 @@
      :aggregate-type (:aggregate_type row)
      :state          (json/read-str (:state row) :key-fn keyword)
      :timestamp      (:timestamp row)}))
+
+;; ---------------------------------------------------------------------------
+;; SQLite EventStore implementation
+;; ---------------------------------------------------------------------------
+
+(defrecord SqliteEventStore [ds]
+  EventStore
+  (-append-events! [_ aggregate-id events expected-version]
+    (sqlite-append-events! ds aggregate-id events expected-version))
+  (-get-events [_ aggregate-id after-version]
+    (sqlite-get-events ds aggregate-id after-version))
+  (-get-all-events [_ after-sequence limit]
+    (sqlite-get-all-events ds after-sequence limit))
+  (-save-snapshot! [_ snapshot]
+    (sqlite-save-snapshot! ds snapshot))
+  (-get-latest-snapshot [_ aggregate-id]
+    (sqlite-get-latest-snapshot ds aggregate-id)))
+
+(defn create-sqlite-store
+  "Creates a durable SQLite-backed EventStore for the given database path
+   and initializes its schema."
+  [db-path]
+  (let [ds (create-datasource db-path)]
+    (initialize! ds)
+    (->SqliteEventStore ds)))
+
+;; ---------------------------------------------------------------------------
+;; In-memory EventStore implementation (atom-backed, for tests/demos)
+;; ---------------------------------------------------------------------------
+
+(defrecord InMemoryEventStore [state]
+  ;; state is an atom of {:events [event...] :seq n :snapshots {agg-id snapshot}}
+  EventStore
+  (-append-events! [_ aggregate-id new-events expected-version]
+    (swap! state
+           (fn [{:keys [events seq] :as s}]
+             (let [current-version (->> events
+                                        (filter #(= aggregate-id (:aggregate-id %)))
+                                        (map :version)
+                                        (reduce max 0))]
+               (when (not= current-version expected-version)
+                 (throw (ex-info "Concurrency conflict"
+                                 {:aggregate-id     aggregate-id
+                                  :expected-version expected-version
+                                  :actual-version   current-version})))
+               (let [numbered (map-indexed
+                                (fn [i ev]
+                                  (assoc ev
+                                         :aggregate-id aggregate-id
+                                         :sequence-number (+ seq i 1)))
+                                new-events)]
+                 (-> s
+                     (update :events into numbered)
+                     (assoc :seq (+ seq (count new-events))))))))
+    nil)
+  (-get-events [_ aggregate-id after-version]
+    (->> (:events @state)
+         (filter #(and (= aggregate-id (:aggregate-id %))
+                       (> (:version %) after-version)))
+         (sort-by :version)
+         vec))
+  (-get-all-events [_ after-sequence limit]
+    (let [xs (->> (:events @state)
+                  (filter #(> (:sequence-number %) after-sequence))
+                  (sort-by :sequence-number))]
+      (vec (if limit (take limit xs) xs))))
+  (-save-snapshot! [_ snapshot]
+    (swap! state assoc-in [:snapshots (:aggregate-id snapshot)] snapshot)
+    nil)
+  (-get-latest-snapshot [_ aggregate-id]
+    (get-in @state [:snapshots aggregate-id])))
+
+(defn create-in-memory-store
+  "Creates a fast, disk-free atom-backed EventStore for tests and demos."
+  []
+  (->InMemoryEventStore (atom {:events [] :seq 0 :snapshots {}})))
+
+;; ---------------------------------------------------------------------------
+;; Public store operations (dispatch on EventStore vs raw datasource)
+;; ---------------------------------------------------------------------------
+
+(defn append-events!
+  "Appends a batch of events with optimistic concurrency. Accepts an
+   EventStore or a raw SQLite datasource."
+  [store aggregate-id events expected-version]
+  (if (event-store? store)
+    (-append-events! store aggregate-id events expected-version)
+    (sqlite-append-events! store aggregate-id events expected-version)))
+
+(defn get-events
+  "Retrieves events for an aggregate with version > after-version (default 0).
+   Accepts an EventStore or a raw SQLite datasource."
+  ([store aggregate-id] (get-events store aggregate-id 0))
+  ([store aggregate-id after-version]
+   (if (event-store? store)
+     (-get-events store aggregate-id after-version)
+     (sqlite-get-events store aggregate-id after-version))))
+
+(defn get-all-events
+  "Retrieves events across all aggregates with sequence > after-sequence,
+   optionally bounded by limit. Accepts an EventStore or raw datasource."
+  ([store] (get-all-events store 0 nil))
+  ([store after-sequence] (get-all-events store after-sequence nil))
+  ([store after-sequence limit]
+   (if (event-store? store)
+     (-get-all-events store after-sequence limit)
+     (sqlite-get-all-events store after-sequence limit))))
+
+(defn save-snapshot!
+  "Upserts a snapshot. Accepts an EventStore or a raw SQLite datasource."
+  [store snapshot]
+  (if (event-store? store)
+    (-save-snapshot! store snapshot)
+    (sqlite-save-snapshot! store snapshot)))
+
+(defn get-latest-snapshot
+  "Returns the latest snapshot for an aggregate, or nil. Accepts an
+   EventStore or a raw SQLite datasource."
+  [store aggregate-id]
+  (if (event-store? store)
+    (-get-latest-snapshot store aggregate-id)
+    (sqlite-get-latest-snapshot store aggregate-id)))
 
 ;; ---------------------------------------------------------------------------
 ;; Aggregate repository
