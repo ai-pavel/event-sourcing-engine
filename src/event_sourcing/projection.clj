@@ -24,18 +24,45 @@
   (swap! (:projections engine) conj projection)
   engine)
 
+(def ^:const default-page-size
+  "Default number of events fetched per page during catch-up."
+  500)
+
+(defn- fetch-page
+  "Calls get-events-fn for one page. Supports both a paging fn of arity
+   [after-seq limit] and a legacy fn of arity [after-seq] (which returns the
+   whole tail; treated as a single final page)."
+  [get-events-fn after-seq page-size]
+  (try
+    (get-events-fn after-seq page-size)
+    (catch clojure.lang.ArityException _
+      (get-events-fn after-seq))))
+
 (defn catch-up!
-  "Catches up by replaying all events that have not yet been processed,
+  "Catches up by replaying events that have not yet been processed,
    dispatching each to all registered projections.
 
+   Events are fetched in fixed-size pages so an arbitrarily long log is never
+   loaded into memory all at once. Pages are fetched until one returns fewer
+   rows than the page size. :last-processed-seq advances after each event.
+
    Parameters:
-     engine     - the projection engine
-     get-events - fn that takes a sequence number and returns events after it"
-  [engine get-events-fn]
-  (let [events (get-events-fn @(:last-processed-seq engine))
-        projections @(:projections engine)]
-    (doseq [event events]
-      (doseq [proj projections]
-        (handle-event proj event))
-      (reset! (:last-processed-seq engine)
-              (or (:sequence-number event) (:version event))))))
+     engine        - the projection engine
+     get-events-fn - fn of [after-seq limit] returning up to `limit` events
+                     after `after-seq` (a legacy [after-seq] fn is also
+                     accepted and treated as a single page)
+     opts          - optional map; :page-size overrides the default page size"
+  ([engine get-events-fn] (catch-up! engine get-events-fn {}))
+  ([engine get-events-fn {:keys [page-size] :or {page-size default-page-size}}]
+   (let [projections @(:projections engine)]
+     (loop []
+       (let [after-seq @(:last-processed-seq engine)
+             events (fetch-page get-events-fn after-seq page-size)]
+         (doseq [event events]
+           (doseq [proj projections]
+             (handle-event proj event))
+           (reset! (:last-processed-seq engine)
+                   (or (:sequence-number event) (:version event))))
+         ;; A short (or empty) page means we have reached the end of the log.
+         (when (= (count events) page-size)
+           (recur)))))))

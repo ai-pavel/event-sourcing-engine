@@ -70,7 +70,7 @@
                              (proj/register! account-summary)
                              (proj/register! tx-history))]
 
-              (proj/catch-up! engine (fn [after-seq] (store/get-all-events ds after-seq)))
+              (proj/catch-up! engine (fn [after-seq limit] (store/get-all-events ds after-seq limit)))
 
               ;; Display read models
               (println "\n--- Account Summaries ---")

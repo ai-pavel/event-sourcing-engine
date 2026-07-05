@@ -100,16 +100,31 @@
      (mapv row->event rows))))
 
 (defn get-all-events
-  "Retrieves all events across all aggregates, optionally after a global sequence number."
+  "Retrieves events across all aggregates after a global sequence number.
+
+   The optional `limit` bounds the number of rows returned in one call so
+   callers (e.g. projection catch-up) can page through an arbitrarily long
+   log without materializing all of it in memory. Omitting `limit` returns
+   the whole tail as before."
   ([ds] (get-all-events ds 0))
-  ([ds after-sequence]
-   (let [rows (jdbc/execute! ds
-                ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
-                  FROM events
-                  WHERE sequence_number > ?
-                  ORDER BY sequence_number"
-                 after-sequence]
-                {:builder-fn rs/as-unqualified-lower-maps})]
+  ([ds after-sequence] (get-all-events ds after-sequence nil))
+  ([ds after-sequence limit]
+   (let [rows (if limit
+                (jdbc/execute! ds
+                  ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
+                    FROM events
+                    WHERE sequence_number > ?
+                    ORDER BY sequence_number
+                    LIMIT ?"
+                   after-sequence limit]
+                  {:builder-fn rs/as-unqualified-lower-maps})
+                (jdbc/execute! ds
+                  ["SELECT sequence_number, aggregate_id, version, event_type, payload, timestamp, event_id
+                    FROM events
+                    WHERE sequence_number > ?
+                    ORDER BY sequence_number"
+                   after-sequence]
+                  {:builder-fn rs/as-unqualified-lower-maps}))]
      (mapv row->event rows))))
 
 ;; ---------------------------------------------------------------------------

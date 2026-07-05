@@ -80,6 +80,27 @@
         (finally
           (.delete (java.io.File. db-path)))))))
 
+(deftest catch-up-fetches-multiple-pages
+  (testing "catch-up! pages through a log longer than the page size"
+    (let [fetch-calls (atom 0)
+          seen (atom [])
+          ;; 5 events, page size 2 => pages of 2, 2, 1 (3 fetches).
+          all-events (mapv (fn [i] {:sequence-number i :event-type :x}) (range 1 6))
+          get-events-fn (fn [after-seq limit]
+                          (swap! fetch-calls inc)
+                          (->> all-events
+                               (filter #(> (:sequence-number %) after-seq))
+                               (take limit)
+                               vec))
+          projection (reify proj/Projection
+                       (handle-event [_ event] (swap! seen conj (:sequence-number event))))
+          engine (-> (proj/create-projection-engine)
+                     (proj/register! projection))]
+      (proj/catch-up! engine get-events-fn {:page-size 2})
+      (is (= [1 2 3 4 5] @seen) "All events processed in order")
+      (is (>= @fetch-calls 3) "Multiple pages fetched")
+      (is (= 5 @(:last-processed-seq engine))))))
+
 (deftest projection-catches-up-on-events
   (testing "Projections process stored events correctly"
     (let [db-path (str "test_proj_" (System/nanoTime) ".db")
