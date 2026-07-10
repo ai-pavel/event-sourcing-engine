@@ -7,11 +7,17 @@
   (:gen-class))
 
 (defn -main
-  "Runs the bank account event sourcing demo."
+  "Runs the bank account event sourcing demo.
+
+   The demo uses a fresh, unique database file per run and deletes it on
+   completion, so repeated `lein run` invocations always start from a clean
+   slate (rather than crashing with a concurrency conflict when re-opening
+   accounts that already exist in a lingering sample_bank.db)."
   [& _args]
-  (let [db-path "sample_bank.db"
+  (let [db-path (str "sample_bank_" (System/nanoTime) ".db")
         ds (store/create-datasource db-path)
         snapshot-interval 5]
+   (try
 
     ;; Initialize schema
     (store/initialize! ds)
@@ -110,8 +116,11 @@
                   (println "  No snapshot yet (will be created at next interval boundary)."))
 
                 ;; Final reload to verify snapshot path
-                (let [final-alice (store/load-aggregate ds (bank/make-bank-account) "ACC-001")]
-                  (printf "  Alice (final reload): Balance: $%.2f, Version: %d%n"
-                          (:balance final-alice) (:version final-alice))))
+                 (let [final-alice (store/load-aggregate ds (bank/make-bank-account) "ACC-001")]
+                   (printf "  Alice (final reload): Balance: $%.2f, Version: %d%n"
+                           (:balance final-alice) (:version final-alice)))
 
-              (println "\nDone."))))))))
+                (println "\nDone.")))))))
+   (finally
+     ;; Clean up the demo database so the next run starts fresh.
+     (.delete (java.io.File. db-path))))))
