@@ -108,7 +108,7 @@
               (let [alice-again (store/load-aggregate ds (bank/make-bank-account) "ACC-001")
                     alice-again (reduce (fn [acc i]
                                           (bank/deposit acc 10.0 :description (str "Small deposit #" (inc i))))
-                                        alice-again (range 3))
+                                        alice-again (range 1))
                     _ (store/save-aggregate! ds alice-again snapshot-interval)]
 
                 (if-let [snapshot (store/get-latest-snapshot ds "ACC-001")]
